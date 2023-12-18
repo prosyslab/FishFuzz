@@ -44,6 +44,7 @@
 #include <sstream>
 #include <list>
 #include <map>
+#include <set>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -61,7 +62,8 @@
 #include "llvm/Analysis/CFGPrinter.h"
 #include "llvm/IR/CFG.h"
 
-
+std::set<std::string> targets;
+bool is_targeted = false;
 
 #if defined(LLVM34)
 #include "llvm/DebugInfo.h"
@@ -147,6 +149,22 @@ namespace {
 
 }
 
+void initTarget(char* target_file) {
+  std::string line;
+  std::ifstream stream(target_file);
+
+  while (std::getline(stream, line))
+    targets.insert(line);
+}
+
+void initialize(void) {
+  char* target_file = getenv("FISHFUZZ_TARGETS");
+
+  if (target_file) {
+    is_targeted = true;
+    initTarget(target_file);
+  }
+}
 
 char AFLCoverage::ID = 0;
 
@@ -441,6 +459,7 @@ static bool isBlacklisted(const Function *F) {
 
 
 bool AFLCoverage::runOnModule(Module &M) {
+  initialize();
 
   /* parse configure file and specify the target */
   bool is_prefuzz = false, is_coverage = false,
@@ -728,7 +747,40 @@ bool AFLCoverage::runOnModule(Module &M) {
             
           }
 
-          bool has_san_label = has_sanitizer_instrumentation(BB); 
+          bool has_san_label = false;
+          
+          if (is_targeted){
+            for (auto &inst : BB) {
+              std::string file_name;
+              std::string line_str;
+              unsigned line, col;
+              getDebugLoc(&inst, file_name, line, col);
+
+              if(!file_name.empty())
+                line_str = std::to_string(line);
+              else
+                continue;
+
+              std::set<std::string>::iterator it;
+              for (it = targets.begin(); it != targets.end(); ++it) {
+                std::size_t colon = (*it).find(":");
+                std::string target_file = (*it).substr(0, colon);
+                std::string target_line = (*it).substr(colon + 1, std::string::npos);
+
+                if (file_name.compare(target_file) == 0) {
+                  if (line_str.compare(target_line) == 0) {
+                    has_san_label = true;
+                    break;
+                  }
+                }
+              }
+
+              if (has_san_label) break;
+            }
+          }
+          else
+            has_san_label = has_sanitizer_instrumentation(BB); 
+
           vuln_blocks += has_san_label;
           if (has_san_label && !has_san_func) has_san_func = true;
 
